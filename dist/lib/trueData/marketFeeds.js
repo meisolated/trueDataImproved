@@ -1,0 +1,236 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const ws_1 = __importDefault(require("ws"));
+const chatter_1 = __importDefault(require("./chatter"));
+const logger_1 = __importDefault(require("./logger"));
+class MarketFeeds {
+    constructor(username, password, symbols, mode = "live") {
+        this.connection = null;
+        this.selfConnectionClosed = false;
+        this.heartbeatStatus = false;
+        this.heartbeatInterval = 20000;
+        this.lastHeartBeatTime = Date.now();
+        this.totalSymbols = 0;
+        // auth params
+        this.auth = {
+            username: "",
+            password: ""
+        };
+        this.allSymbols = [];
+        this.userPort = 8082;
+        this.websocketUrl = "wss://push.truedata.in";
+        this.replayWebsocketUrl = "wss://replay.truedata.in";
+        this.mode = "live";
+        this.reconnectInterval = 1000 * 10;
+        this._reconnectInterval = null;
+        this._heartBeatCheckerInterval = null;
+        this.touchlineData = {};
+        this.touchlineMap = {};
+        this.auth.username = username;
+        this.auth.password = password;
+        this.allSymbols = symbols;
+        this.totalSymbols = symbols.length;
+        this.mode = mode;
+    }
+    connect() {
+        if (!this.connection) {
+            logger_1.default.info("Connecting to TrueData...", false);
+            let websocketUrl = this.mode === "live" ? this.websocketUrl : this.replayWebsocketUrl;
+            let url = `${websocketUrl}:${this.userPort}/?user=${this.auth.username}&password=${this.auth.password}`;
+            try {
+                this.connection = new ws_1.default(url);
+                this.connection.on("open", () => {
+                    logger_1.default.log("Connected to TrueData", false);
+                });
+                this.connection.on("message", (data) => {
+                    if (this._reconnectInterval) {
+                        clearInterval(this._reconnectInterval);
+                        this._reconnectInterval = null;
+                    }
+                    var jsonObj = JSON.parse(data.toString());
+                    if (jsonObj.trade != null) {
+                        const tradeArray = jsonObj.trade;
+                        chatter_1.default.emit('tick', this.handleRealTimeData(tradeArray));
+                    }
+                    else if (jsonObj.success) {
+                        switch (jsonObj.message) {
+                            case 'TrueData Real Time Data Service':
+                                logger_1.default.log('TrueData Real Time Data Service', false);
+                                this.heartbeatChecker();
+                                this.subscribe(this.allSymbols);
+                                break;
+                            // -------------------> symbol added <-------------------
+                            case 'symbols added':
+                                logger_1.default.log(`Added Symbols:${jsonObj.symbolsadded}, Total Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`, false);
+                                break;
+                            // -------------------> touchline <-------------------
+                            case "touchline":
+                                logger_1.default.log("Touchline touched", false);
+                                jsonObj.symbollist.forEach((touchline) => {
+                                    this.touchlineData[touchline[1]] = this.handleTouchline(touchline);
+                                });
+                                break;
+                            // -------------------> HeartBeat <-------------------
+                            case "HeartBeat":
+                                this.heartbeatStatus = true;
+                                this.lastHeartBeatTime = Date.now();
+                                logger_1.default.info("HeartBeat", false);
+                                break;
+                            case 'marketstatus':
+                                logger_1.default.log(`Market Status: ${jsonObj.marketstatus}`, false);
+                        }
+                    }
+                    else if (jsonObj.success == false) {
+                        logger_1.default.error(jsonObj.message, false);
+                    }
+                });
+                this.connection.on("close", () => {
+                    logger_1.default.log("Connection closed", false);
+                    this.reconnectIntervalMethod();
+                });
+                this.connection.on("error", (err) => {
+                    logger_1.default.error(err.message, false);
+                });
+                // this.websocketEvents()
+            }
+            catch (err) {
+                logger_1.default.error(err.message, false);
+            }
+        }
+    }
+    reconnectIntervalMethod() {
+        logger_1.default.info("Reconnect interval to TrueData started");
+        if (this._reconnectInterval)
+            clearInterval(this._reconnectInterval);
+        this._reconnectInterval = setInterval(() => {
+            logger_1.default.info("Reconnecting to TrueData...", false);
+            this.closeConnection();
+            this.connect();
+        }, this.reconnectInterval);
+    }
+    websocketEvents() {
+    }
+    closeConnection() {
+        if (this.connection) {
+            logger_1.default.log("Closing connection", false);
+            this.connection.close();
+            this.connection = null;
+        }
+        else {
+            logger_1.default.error("Why are you trying to close something not open", false);
+            return {
+                status: "error",
+                message: "Connection not established"
+            };
+        }
+    }
+    subscribe(symbols) {
+        var _a;
+        //for-loop to override max 65000 characters
+        for (let i = 0; i <= symbols.length; i += 1500) {
+            const jsonRequest = {
+                method: 'addsymbol',
+                symbols: symbols.slice(i, i + 1500),
+            };
+            let s = JSON.stringify(jsonRequest);
+            (_a = this.connection) === null || _a === void 0 ? void 0 : _a.send(s);
+        }
+    }
+    unSubscribe(symbols) {
+        var _a;
+        for (let i = 0; i <= symbols.length; i += 1500) {
+            const jsonRequest = {
+                method: 'removesymbol',
+                symbols: symbols.slice(i, i + 1500),
+            };
+            let s = JSON.stringify(jsonRequest);
+            (_a = this.connection) === null || _a === void 0 ? void 0 : _a.send(s);
+        }
+    }
+    heartbeatChecker() {
+        logger_1.default.info("Heartbeat Checker Initiated", false);
+        this._heartBeatCheckerInterval = setInterval(() => {
+            const checkerHeartBeat = Date.now() - this.lastHeartBeatTime;
+            if (checkerHeartBeat > 15000) {
+                this.closeConnection();
+                this.heartbeatStatus = false;
+                logger_1.default.info(`Auto Reconnect Initiated @ ${new Date().toLocaleTimeString()}`);
+                clearInterval(this._heartBeatCheckerInterval);
+            }
+        }, 20000);
+    }
+    handleTouchline(touchline) {
+        return {
+            Symbol: touchline[0],
+            LastUpdateTime: touchline[2],
+            LTP: +touchline[3],
+            TickVolume: +touchline[4],
+            ATP: +touchline[5],
+            TotalVolume: +touchline[6],
+            Open: +touchline[7],
+            High: +touchline[8],
+            Low: +touchline[9],
+            Previous_Close: +touchline[10],
+            Today_OI: +touchline[11],
+            Previous_Open_Interest_Close: +touchline[12],
+            Turnover: +touchline[13],
+            Bid: +touchline[14] || 0,
+            BidQty: +touchline[15] || 0,
+            Ask: +touchline[16] || 0,
+            AskQty: +touchline[17] || 0,
+        };
+    }
+    handleRealTimeData(tradeArray) {
+        return {
+            Symbol: this.touchlineMap[tradeArray[0]],
+            Symbol_ID: +tradeArray[0],
+            Timestamp: tradeArray[1],
+            LTP: +tradeArray[2],
+            LTQ: +tradeArray[3],
+            ATP: +tradeArray[4],
+            Volume: +tradeArray[5],
+            Open: +tradeArray[6],
+            High: +tradeArray[7],
+            Low: +tradeArray[8],
+            Prev_Close: +tradeArray[9],
+            OI: +tradeArray[10],
+            Prev_Open_Int_Close: +tradeArray[11],
+            Day_Turnover: +tradeArray[12],
+            Special: tradeArray[13],
+            Tick_Sequence_No: +tradeArray[14],
+            Bid: tradeArray[15] !== undefined ? +tradeArray[15] : "bidDeactivatedMessage",
+            Bid_Qty: tradeArray[16] !== undefined ? +tradeArray[16] : "bidDeactivatedMessage",
+            Ask: tradeArray[17] !== undefined ? +tradeArray[17] : "bidDeactivatedMessage",
+            Ask_Qty: tradeArray[18] !== undefined ? +tradeArray[18] : "bidDeactivatedMessage",
+        };
+    }
+    handleBidaskData(bidaskArray) {
+        return {
+            Symbol: this.touchlineMap[bidaskArray[0]],
+            SymbolId: bidaskArray[0],
+            Time: bidaskArray[1],
+            Bid: +bidaskArray[2],
+            BidQty: +bidaskArray[3],
+            Ask: +bidaskArray[4],
+            AskQty: +bidaskArray[5],
+        };
+    }
+    handleBarData(barArray, bar) {
+        return {
+            Symbol: this.touchlineMap[barArray[0]],
+            SymbolId: barArray[0],
+            Bar: bar,
+            Time: barArray[1],
+            Open: +barArray[2],
+            High: +barArray[3],
+            Low: +barArray[4],
+            Close: +barArray[5],
+            Volume: +barArray[6],
+            OI: +barArray[7],
+        };
+    }
+}
+exports.default = MarketFeeds;
