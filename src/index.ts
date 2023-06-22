@@ -2,8 +2,8 @@ import config from './config'
 import { MarketFeeds } from './lib/trueData'
 import chatter from './lib/trueData/chatter'
 
-const marketFeeds = new MarketFeeds(config.username, config.password, ["NIFTY BANK"], "live")
-marketFeeds.connect()
+
+const marketFeeds = new MarketFeeds(config.username, config.password, ["NIFTY BANK"], "live", true)
 
 chatter.on('tick', (data: any) => {
     console.log(data)

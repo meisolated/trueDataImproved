@@ -2,12 +2,20 @@ import ws from "ws"
 import chatter from "./chatter"
 import logger from "./logger"
 
+/**
+ * @description MarketFeeds class to connect to TrueData
+ * @author username: meisolated on instagram and github
+ * @date 23/06/2023
+ * @class MarketFeeds
+ * @constructor {username:string,password:string,symbols:string[],mode:string="live",autoConnect:boolean=true}
+ */
 class MarketFeeds {
     connection: ws | null = null
     selfConnectionClosed = false
     heartbeatStatus = false
     heartbeatInterval = 20000
     lastHeartBeatTime = Date.now()
+    logHeartbeat = false
     totalSymbols = 0
     // auth params
     auth = {
@@ -22,27 +30,34 @@ class MarketFeeds {
     reconnectInterval = 1000 * 10
     _reconnectInterval: NodeJS.Timeout | null = null
     _heartBeatCheckerInterval: NodeJS.Timeout | null = null
+
+    // data
     touchlineData: any = {}
     touchlineMap: any = {}
+    bidAskData: any = {}
 
-    constructor(username: string, password: string, symbols: string[], mode: string = "live") {
+    constructor(username: string, password: string, symbols: string[], mode: string = "live", autoConnect: boolean = true, logHeartbeat: boolean = false) {
         this.auth.username = username
         this.auth.password = password
         this.allSymbols = symbols
         this.totalSymbols = symbols.length
         this.mode = mode
+        this.logHeartbeat = logHeartbeat
+        if (autoConnect) {
+            this.connect()
+        }
     }
 
     connect() {
         if (!this.connection) {
-            logger.info("Connecting to TrueData...", false)
+            logger.info("Connecting to TrueData...", false, undefined, "TrueData")
             let websocketUrl = this.mode === "live" ? this.websocketUrl : this.replayWebsocketUrl
             let url = `${websocketUrl}:${this.userPort}/?user=${this.auth.username}&password=${this.auth.password}`
 
             try {
                 this.connection = new ws(url)
                 this.connection.on("open", () => {
-                    logger.info("Connected to TrueData", false)
+                    logger.info("Connected to TrueData", false, undefined, "TrueData")
                 })
 
                 this.connection.on("message", (data) => {
@@ -54,16 +69,19 @@ class MarketFeeds {
                     if (jsonObj.trade != null) {
                         const tradeArray = jsonObj.trade
                         chatter.emit("tick", this.handleRealTimeData(tradeArray))
+                    } else if (this.bidAskData && jsonObj.bidask != null) {
+                        const bidAskArray = jsonObj.bidask
+                        chatter.emit("bigAsk", this.handleBidAskData(bidAskArray))
                     } else if (jsonObj.success) {
                         switch (jsonObj.message) {
                             case "TrueData Real Time Data Service":
-                                logger.info("TrueData Real Time Data Service", false)
+                                logger.info("TrueData Real Time Data Service", false, undefined, "TrueData")
                                 this.heartbeatChecker()
                                 this.subscribe(this.allSymbols)
                                 break
                             // -------------------> symbol added <-------------------
                             case "symbols added":
-                                logger.info(`Added Symbols:${jsonObj.symbolsadded}, Total Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`, false)
+                                logger.info(`Added Symbols:${jsonObj.symbolsadded}, Total Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`, false, undefined, "TrueData")
                                 jsonObj.symbollist.forEach((symbol: string[]) => {
                                     this.touchlineData[symbol[1]] = this.handleTouchline(symbol)
                                     this.touchlineMap[symbol[1]] = symbol[0]
@@ -72,7 +90,7 @@ class MarketFeeds {
                                 break
                             // -------------------> touchline <-------------------
                             case "touchline":
-                                logger.info("Touchline touched", false)
+                                logger.info("Touchline touched", false, undefined, "TrueData")
                                 jsonObj.symbollist.forEach((touchline: string[]) => {
                                     this.touchlineData[touchline[1]] = this.handleTouchline(touchline)
                                 })
@@ -82,46 +100,44 @@ class MarketFeeds {
                             case "HeartBeat":
                                 this.heartbeatStatus = true
                                 this.lastHeartBeatTime = Date.now()
-                                logger.info("HeartBeat", false)
+                                if (this.logHeartbeat) logger.info("HeartBeat", false, undefined, "TrueData")
                                 break
                             case "marketstatus":
-                                logger.info(`Market Status: ${jsonObj.data}`, false)
+                                logger.info(`Market Status: ${jsonObj.data}`, false, undefined, "TrueData")
                                 break
-                            case 'symbols removed':
-                                console.log(
-                                    `Removed Symbols:${jsonObj.symbolsremoved}, Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`
-                                )
+                            case "symbols removed":
+                                console.log(`Removed Symbols:${jsonObj.symbolsremoved}, Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`)
                                 break
                             default:
-                                logger.info(jsonObj.message, false)
+                                logger.info(jsonObj.message, false, undefined, "TrueData")
                         }
                     } else if (jsonObj.success == false) {
-                        logger.error(jsonObj.message, false)
+                        logger.error(jsonObj.message, false, undefined, "TrueData")
                     }
                 })
 
                 this.connection.on("close", () => {
-                    logger.info("Connection closed", false)
+                    logger.info("Connection closed", false, undefined, "TrueData")
                     this.reconnectIntervalMethod()
                 })
 
                 this.connection.on("error", (err) => {
-                    logger.error(err.message, false)
+                    logger.error(err.message, false, undefined, "TrueData")
                 })
                 // this.websocketEvents()
             } catch (err: any) {
-                logger.error(err.message, false)
+                logger.error(err.message, false, undefined, "TrueData")
             }
         }
     }
 
     closeConnection() {
         if (this.connection) {
-            logger.info("Closing connection", false)
+            logger.info("Closing connection", false, undefined, "TrueData")
             this.connection.close()
             this.connection = null
         } else {
-            logger.error("Why are you trying to close something not open", false)
+            logger.error("Why are you trying to close something not open", false, undefined, "TrueData")
             return {
                 status: "error",
                 message: "Connection not established",
@@ -130,6 +146,7 @@ class MarketFeeds {
     }
 
     unSubscribe(symbols: string[]) {
+        logger.info(`Unsubscribing Symbols: ${symbols}`, false, undefined, "TrueData")
         for (let i = 0; i <= symbols.length; i += 1500) {
             const jsonRequest = {
                 method: "removesymbol",
@@ -141,19 +158,21 @@ class MarketFeeds {
     }
 
     private heartbeatChecker() {
-        logger.info("Heartbeat Checker Initiated", false)
+        logger.info("Heartbeat Checker Initiated", false, undefined, "TrueData")
+        if (!this.logHeartbeat) logger.warn("Heartbeat logging disabled by default or disabled by you!", false, undefined, "TrueData")
         this._heartBeatCheckerInterval = setInterval(() => {
             const checkerHeartBeat = Date.now() - this.lastHeartBeatTime
             if (checkerHeartBeat > 15000) {
                 this.closeConnection()
                 this.heartbeatStatus = false
-                logger.info(`Auto Reconnect Initiated @ ${new Date().toLocaleTimeString()}`)
+                logger.info(`Auto Reconnect Initiated @ ${new Date().toLocaleTimeString()}`, false, undefined, "TrueData")
                 clearInterval(this._heartBeatCheckerInterval as NodeJS.Timeout)
             }
         }, 20000)
     }
 
     private subscribe(symbols: string[]) {
+        logger.info(`Subscribing Symbols: ${symbols}`, false, undefined, "TrueData")
         //for-loop to override max 65000 characters
         for (let i = 0; i <= symbols.length; i += 1500) {
             const jsonRequest = {
@@ -166,10 +185,10 @@ class MarketFeeds {
     }
 
     private reconnectIntervalMethod() {
-        logger.info("Reconnect interval to TrueData started")
+        logger.info("Reconnect interval to TrueData started", false, undefined, "TrueData")
         if (this._reconnectInterval) clearInterval(this._reconnectInterval)
         this._reconnectInterval = setInterval(() => {
-            logger.info("Reconnecting to TrueData...", false)
+            logger.info("Reconnecting to TrueData...", false, undefined, "TrueData")
             this.closeConnection()
             this.connect()
         }, this.reconnectInterval)
@@ -222,7 +241,7 @@ class MarketFeeds {
         }
     }
 
-    private handleBidaskData(bidaskArray: string[]) {
+    private handleBidAskData(bidaskArray: string[]) {
         return {
             Symbol: this.touchlineMap[bidaskArray[0]],
             SymbolId: bidaskArray[0],
