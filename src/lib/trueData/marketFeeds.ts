@@ -51,7 +51,6 @@ class MarketFeeds {
                         this._reconnectInterval = null
                     }
                     var jsonObj = JSON.parse(data.toString())
-
                     if (jsonObj.trade != null) {
                         const tradeArray = jsonObj.trade
                         chatter.emit("tick", this.handleRealTimeData(tradeArray))
@@ -65,6 +64,11 @@ class MarketFeeds {
                             // -------------------> symbol added <-------------------
                             case "symbols added":
                                 logger.info(`Added Symbols:${jsonObj.symbolsadded}, Total Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`, false)
+                                jsonObj.symbollist.forEach((symbol: string[]) => {
+                                    this.touchlineData[symbol[1]] = this.handleTouchline(symbol)
+                                    this.touchlineMap[symbol[1]] = symbol[0]
+                                })
+                                chatter.emit("touchline", this.touchlineData)
                                 break
                             // -------------------> touchline <-------------------
                             case "touchline":
@@ -72,6 +76,7 @@ class MarketFeeds {
                                 jsonObj.symbollist.forEach((touchline: string[]) => {
                                     this.touchlineData[touchline[1]] = this.handleTouchline(touchline)
                                 })
+                                chatter.emit("touchline", this.touchlineData)
                                 break
                             // -------------------> HeartBeat <-------------------
                             case "HeartBeat":
@@ -80,7 +85,15 @@ class MarketFeeds {
                                 logger.info("HeartBeat", false)
                                 break
                             case "marketstatus":
-                                logger.info(`Market Status: ${jsonObj.marketstatus}`, false)
+                                logger.info(`Market Status: ${jsonObj.data}`, false)
+                                break
+                            case 'symbols removed':
+                                console.log(
+                                    `Removed Symbols:${jsonObj.symbolsremoved}, Symbols Subscribed:${jsonObj.totalsymbolsubscribed}`
+                                )
+                                break
+                            default:
+                                logger.info(jsonObj.message, false)
                         }
                     } else if (jsonObj.success == false) {
                         logger.error(jsonObj.message, false)
